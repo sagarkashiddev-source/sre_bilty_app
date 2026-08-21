@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Bilty GST Invoice",
+    "slug": "bilty-gst-invoice",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "biltygst",
+    "backgroundColor": "#EFEBE0",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sagarroadways.biltygst"
+    },
+    "android": {
+      "package": "com.sagarroadways.biltygst",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#C6332B",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": ["INTERNET"]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
+      }
+    }
+  }
+}

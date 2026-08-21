@@ -1,0 +1,4 @@
+html, body, #root { min-height: 100%; }
+body { margin: 0; background: #F7F4EC; }
+*, *::before, *::after { box-sizing: border-box; }
+button, input, select, textarea { font: inherit; }
