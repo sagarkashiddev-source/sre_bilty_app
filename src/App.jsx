@@ -1198,6 +1198,11 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
     const t = setTimeout(() => { draftCache.save(draft); setAutosavedAt(new Date()); }, 600);
     return () => clearTimeout(t);
   }, [draft, locked]);
+  useEffect(() => {
+    window.location.reload();
+    console.log("invoice update");
+  }, []);
+
 
   return (
     <div className="page">
