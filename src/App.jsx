@@ -1356,6 +1356,9 @@ function History({ invoices, companies, companyById, onEdit, onDelete, onDuplica
     }
     return true;
   });
+useEffect(() => {
+    console.log("update");
+  }, []);
 
   return (
     <div className="page">
