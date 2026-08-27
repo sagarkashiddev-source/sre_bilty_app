@@ -1183,17 +1183,15 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
     setErr("");
     try {
       await persistCustomerAndTemplateIfNeeded();
-      if (goPreviewAfter) {
-        onPreview(draft);
-      } else {
-        const saved = await onSave(draft);
-        // Sync the server's real id + invoice number back into this form.
-        // Without this, a second "Save Draft" click can't find this invoice
-        // again (it's still looking for the old local-only id) and ends up
-        // creating a second, duplicate invoice with a new number instead of
-        // updating this one — see saveInvoice() for the full explanation.
-        if (saved) setDraft(saved);
-      }
+      // Preview used to skip saving entirely and just show the unsaved local
+      // draft — which meant it always showed the "(assigned on save)"
+      // placeholder and never reflected in totals/history until a separate
+      // Save click. Preview now saves first (same as Save Draft), then shows
+      // the server's saved copy, so what you see in Preview/Print is always
+      // exactly what's actually stored.
+      const saved = await onSave(draft);
+      if (saved) setDraft(saved);
+      if (goPreviewAfter && saved) onPreview(saved);
     }
     catch (e) { setErr(e.message || "Unable to save the invoice. Please retry."); }
   };
@@ -1420,7 +1418,9 @@ function History({ invoices, companies, companyById, onEdit, onDelete, onDuplica
                       <button className="link-btn" onClick={() => onEdit(inv)}>{locked ? "View/Amend" : "Edit"}</button>
                       <button className="link-btn" onClick={() => onDuplicate(inv)}>Duplicate</button>
                       {locked ? (
-                        inv.status !== "cancelled" && <button className="link-btn danger" onClick={() => onStatus(inv.id, "cancelled")}>Cancel</button>
+                        inv.status !== "cancelled"
+                          ? <button className="link-btn danger" onClick={() => onStatus(inv.id, "cancelled")}>Cancel</button>
+                          : <button className="link-btn danger" onClick={() => setConfirmDelete(inv.id)}>Delete</button>
                       ) : (
                         <button className="link-btn danger" onClick={() => setConfirmDelete(inv.id)}>Delete</button>
                       )}
@@ -1436,7 +1436,7 @@ function History({ invoices, companies, companyById, onEdit, onDelete, onDuplica
       {confirmDelete && (
         <div className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
           <div className="modal small" onClick={(e) => e.stopPropagation()}>
-            <h3>Delete this invoice?</h3><p className="muted">This can't be undone. (Only draft invoices can be deleted — finalized invoices must be cancelled instead, to keep a clean audit trail.)</p>
+            <h3>Delete this invoice?</h3><p className="muted">This can't be undone. Finalized invoices are kept in your audit log even after deletion, so they're removed from your history and reports but never fully erased.</p>
             <div className="row-gap end">
               <button className="ghost-btn" onClick={() => setConfirmDelete(null)}>Cancel</button>
               <button className="danger-btn" onClick={() => { onDelete(confirmDelete); setConfirmDelete(null); }}>Delete</button>
@@ -2430,7 +2430,7 @@ input:focus, select:focus, textarea:focus{outline:2px solid var(--gold); outline
   *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 }
 
-@media (max-width:860px){
+@media screen and (max-width:860px){
   .grid-2{grid-template-columns:1fr;}
   .two-col{grid-template-columns:1fr;}
   .stat-grid{grid-template-columns:1fr 1fr;}
