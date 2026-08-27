@@ -48,13 +48,44 @@ const invoiceSchema = z.object({
   finalize: z.boolean().optional().default(false), // true = assign as a locked/sent invoice
 });
 
-async function nextInvoiceNumber(client, companyId) {
+/** Indian financial year (Apr–Mar) as e.g. '2026/27' for any date in that year. */
+function financialYearOf(dateStr) {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1; // 1-12
+  const startYear = m >= 4 ? y : y - 1;
+  return `${startYear}/${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+/**
+ * Assigns the next invoice number for a company, honoring that company's own
+ * numbering settings (prefix, zero-padding, and whether the sequence resets
+ * every financial year). Numbering settings live in companies.bank_details
+ * (a JSONB blob also used for bank details) — see company.routes.js.
+ *
+ * The increment is a single atomic UPDATE...RETURNING inside the caller's
+ * transaction, so two concurrent saves for the same company can never be
+ * handed the same number, and a number is never reused (the counter only
+ * ever increases, even if the draft that reserved it is later deleted).
+ */
+async function nextInvoiceNumber(client, companyId, invoiceDateStr) {
+  const { rows: companyRows } = await client.query("SELECT bank_details FROM companies WHERE id = $1", [companyId]);
+  const settings = companyRows[0]?.bank_details || {};
+  const prefix = typeof settings.invoicePrefix === "string" && settings.invoicePrefix.trim() ? settings.invoicePrefix : "INV-";
+  const padding = Number.isFinite(Number(settings.numberPadding)) && Number(settings.numberPadding) > 0 ? Number(settings.numberPadding) : 4;
+  const fyResetEnabled = !!settings.fyResetEnabled;
+  const bucket = fyResetEnabled ? financialYearOf(invoiceDateStr) : "ALL";
+
   const { rows } = await client.query(
-    "UPDATE companies SET invoice_seq = invoice_seq + 1 WHERE id = $1 RETURNING invoice_seq",
-    [companyId]
+    `INSERT INTO invoice_counters (company_id, bucket, last_seq)
+     VALUES ($1, $2, 1)
+     ON CONFLICT (company_id, bucket)
+     DO UPDATE SET last_seq = invoice_counters.last_seq + 1
+     RETURNING last_seq`,
+    [companyId, bucket]
   );
-  const seq = rows[0].invoice_seq;
-  return `INV-${String(seq).padStart(4, "0")}`;
+  const seq = rows[0].last_seq;
+  return `${prefix}${String(seq).padStart(padding, "0")}`;
 }
 
 async function getCompanyAndCustomer(client, companyId, customerId) {
@@ -182,11 +213,11 @@ router.post("/", requireCompanyOwnership, async (req, res, next) => {
       const { company, customer } = await getCompanyAndCustomer(client, req.companyId, body.customerId);
       if (!company) throw new HttpError(404, "Company not found.");
 
-      const computed = computeInvoiceServer(body.items, company, customer);
       const discountPaise = toPaise(body.discount ?? 0);
-      const grandTotalPaise = computed.grandTotalPaise - discountPaise;
+      const computed = computeInvoiceServer(body.items, company, customer, discountPaise);
+      const grandTotalPaise = computed.grandTotalPaise;
 
-      const invoiceNumber = await nextInvoiceNumber(client, req.companyId);
+      const invoiceNumber = await nextInvoiceNumber(client, req.companyId, body.invoiceDate);
       const status = body.finalize ? "sent" : "draft";
 
       const { rows } = await client.query(
@@ -228,9 +259,9 @@ router.put("/:id", loadOwnedInvoice, async (req, res, next) => {
     const body = invoiceSchema.parse({ ...req.body, companyId: req.invoiceRow.company_id });
     const result = await withTransaction(async (client) => {
       const { company, customer } = await getCompanyAndCustomer(client, req.invoiceRow.company_id, body.customerId);
-      const computed = computeInvoiceServer(body.items, company, customer);
       const discountPaise = toPaise(body.discount ?? 0);
-      const grandTotalPaise = computed.grandTotalPaise - discountPaise;
+      const computed = computeInvoiceServer(body.items, company, customer, discountPaise);
+      const grandTotalPaise = computed.grandTotalPaise;
       const status = body.finalize ? "sent" : "draft";
 
       const { rows } = await client.query(
@@ -305,7 +336,8 @@ router.post("/:id/duplicate", loadOwnedInvoice, async (req, res, next) => {
     const result = await withTransaction(async (client) => {
       const { rows: items } = await client.query("SELECT * FROM invoice_items WHERE invoice_id = $1 ORDER BY sort_order ASC", [req.params.id]);
       const src = req.invoiceRow;
-      const invoiceNumber = await nextInvoiceNumber(client, src.company_id);
+      const newInvoiceDate = new Date().toISOString().slice(0, 10);
+      const invoiceNumber = await nextInvoiceNumber(client, src.company_id, newInvoiceDate);
       const { rows } = await client.query(
         `INSERT INTO invoices
           (company_id, customer_id, customer_snapshot, invoice_number, invoice_date, due_date, status, finalized,
@@ -313,7 +345,7 @@ router.post("/:id/duplicate", loadOwnedInvoice, async (req, res, next) => {
            grand_total_paise, notes, terms, duplicated_from)
          VALUES ($1,$2,$3,$4,$5,$6,'draft',false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
         [src.company_id, src.customer_id, src.customer_snapshot, invoiceNumber,
-         new Date().toISOString().slice(0, 10), src.due_date,
+         newInvoiceDate, src.due_date,
          src.subtotal_paise, src.discount_paise, src.taxable_amount_paise, src.cgst_paise, src.sgst_paise,
          src.igst_paise, src.round_off_paise, src.grand_total_paise, src.notes, src.terms, src.id]
       );

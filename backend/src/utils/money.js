@@ -53,7 +53,7 @@ export const stateFromGSTIN = (g) => (g && g.length >= 2 ? STATE_CODES[g.slice(0
  * line items). This is the single source of truth used both to validate
  * client-submitted invoices and to compute what actually gets persisted.
  */
-export function computeInvoiceServer(items, company, customer) {
+export function computeInvoiceServer(items, company, customer, discountPaise = 0n) {
   const lines = (items || []).map((it) => {
     const amountPaise = lineAmountPaise(it.quantity, it.rate);
     return { ...it, amountPaise };
@@ -84,7 +84,11 @@ export function computeInvoiceServer(items, company, customer) {
   const igstTotalPaise = lineResults.reduce((s, r) => s + r.igstPaise, 0n);
   const totalTaxPaise = cgstTotalPaise + sgstTotalPaise + igstTotalPaise;
 
-  const rawTotalPaise = taxablePaise + totalTaxPaise;
+  // Discount is applied to the raw (post-tax) total BEFORE rounding, so the
+  // stored round-off always reconciles with the actual grand total charged —
+  // previously the discount was subtracted after rounding, which silently
+  // broke that reconciliation whenever a discount was present.
+  const rawTotalPaise = taxablePaise + totalTaxPaise - discountPaise;
   const grandTotalPaise = (rawTotalPaise >= 0n ? (rawTotalPaise + 50n) / 100n : (rawTotalPaise - 50n) / 100n) * 100n;
   const roundOffPaise = grandTotalPaise - rawTotalPaise;
 
@@ -95,6 +99,7 @@ export function computeInvoiceServer(items, company, customer) {
     cgstPaise: cgstTotalPaise,
     sgstPaise: sgstTotalPaise,
     igstPaise: igstTotalPaise,
+    discountPaise,
     roundOffPaise,
     grandTotalPaise,
     interstate,
