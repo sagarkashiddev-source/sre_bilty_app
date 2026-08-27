@@ -125,4 +125,31 @@ router.delete("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * TEMPORARY one-time cleanup endpoint, added to clear out test invoices when
+ * no Shell access is available on the hosting plan. Only ever touches
+ * invoices (and their cascaded payments/credit/debit notes) belonging to
+ * companies owned by the authenticated caller — it can't reach any other
+ * user's data. Requires typing the confirm phrase in the request body so it
+ * can't be triggered by an accidental click or a replayed request.
+ *
+ * Safe to remove this route (and this comment) once you've used it.
+ */
+router.post("/wipe-all-invoices", async (req, res, next) => {
+  try {
+    if (req.body?.confirm !== "DELETE ALL MY INVOICES") {
+      return res.status(400).json({ error: 'Send { "confirm": "DELETE ALL MY INVOICES" } in the request body to proceed.' });
+    }
+    const { rows: owned } = await pool.query("SELECT id FROM companies WHERE user_id = $1", [req.userId]);
+    const companyIds = owned.map((r) => r.id);
+    if (!companyIds.length) return res.json({ ok: true, deletedInvoices: 0 });
+
+    const { rowCount } = await pool.query("DELETE FROM invoices WHERE company_id = ANY($1)", [companyIds]);
+    await pool.query("DELETE FROM invoice_counters WHERE company_id = ANY($1)", [companyIds]);
+    await pool.query("UPDATE companies SET invoice_seq = 0 WHERE id = ANY($1)", [companyIds]);
+
+    res.json({ ok: true, deletedInvoices: rowCount });
+  } catch (err) { next(err); }
+});
+
 export default router;
