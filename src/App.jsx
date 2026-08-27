@@ -2429,3 +2429,4 @@ input:focus, select:focus, textarea:focus{outline:2px solid var(--gold); outline
   .inv-company-block{padding-left:14px; padding-top:60px;}
   .inv-logo-float{left:50%; top:14px; transform:translateX(-50%);}
 }
+`;
