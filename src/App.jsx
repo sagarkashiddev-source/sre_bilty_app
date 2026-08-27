@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as api from "./services/api";
+import { draftCache } from "./services/offlineCache";
+
 /* ============================== helpers ============================== */
 
 /** Browser-safe identifier.  The server must replace this with a database UUID. */
