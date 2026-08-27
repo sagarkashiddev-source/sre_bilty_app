@@ -12,6 +12,35 @@ async function assertInvoiceOwned(companyId, invoiceId) {
   return !!rows.length;
 }
 
+/**
+ * Single source of truth for "is this invoice paid/partial/still owed", computed
+ * server-side from actual recorded payments and credit/debit notes — never
+ * trusted from the client. Called after every payment create/void so the
+ * invoice's status can never drift out of sync with its real balance,
+ * regardless of which client (web, mobile, retried request) recorded it.
+ * Only touches sent/partial/paid invoices — draft and cancelled are untouched.
+ */
+async function recomputeInvoiceStatus(invoiceId) {
+  const { rows } = await pool.query("SELECT id, status, grand_total_paise FROM invoices WHERE id = $1", [invoiceId]);
+  const invoice = rows[0];
+  if (!invoice || invoice.status === "draft" || invoice.status === "cancelled") return;
+
+  const { rows: sums } = await pool.query(
+    `SELECT
+       COALESCE((SELECT SUM(amount_paise) FROM payments WHERE invoice_id = $1 AND status <> 'void'), 0) AS paid,
+       COALESCE((SELECT SUM(amount_paise) FROM credit_notes WHERE invoice_id = $1 AND status = 'issued'), 0) AS credit,
+       COALESCE((SELECT SUM(amount_paise) FROM debit_notes WHERE invoice_id = $1 AND status = 'issued'), 0) AS debit`,
+    [invoiceId]
+  );
+  const { paid, credit, debit } = sums[0];
+  const outstanding = BigInt(invoice.grand_total_paise) - BigInt(paid) - BigInt(credit) + BigInt(debit);
+
+  const nextStatus = outstanding <= 0n ? "paid" : (BigInt(paid) + BigInt(credit) > 0n ? "partial" : "sent");
+  if (nextStatus !== invoice.status) {
+    await pool.query("UPDATE invoices SET status = $1 WHERE id = $2", [nextStatus, invoiceId]);
+  }
+}
+
 /* -------------------------------- payments -------------------------------- */
 
 const paymentSchema = z.object({
@@ -45,6 +74,7 @@ router.post("/payments", requireCompanyOwnership, async (req, res, next) => {
        VALUES ($1,$2,$3,$4,$5,COALESCE($6, CURRENT_DATE)) RETURNING *`,
       [req.companyId, body.invoiceId, toPaise(body.amount).toString(), body.method || null, body.reference || null, body.paidOn || null]
     );
+    await recomputeInvoiceStatus(body.invoiceId);
     res.status(201).json({ payment: paymentToApi(rows[0]) });
   } catch (err) {
     if (err.name === "ZodError") return res.status(400).json({ error: err.issues[0]?.message || "Invalid input." });
@@ -60,6 +90,7 @@ router.post("/payments/:id/void", requireAuth, async (req, res, next) => {
       [req.params.id, req.userId]
     );
     if (!rows.length) return res.status(404).json({ error: "Payment not found." });
+    await recomputeInvoiceStatus(rows[0].invoice_id);
     res.json({ payment: paymentToApi(rows[0]) });
   } catch (err) { next(err); }
 });
@@ -100,6 +131,7 @@ for (const kind of ["credit", "debit"]) {
          VALUES ($1,$2,$3,$4,$5,COALESCE($6, CURRENT_DATE)) RETURNING *`,
         [req.companyId, body.invoiceId, body.noteNumber, toPaise(body.amount).toString(), body.reason || null, body.issuedOn || null]
       );
+      await recomputeInvoiceStatus(body.invoiceId);
       res.status(201).json({ [kind === "credit" ? "creditNote" : "debitNote"]: noteToApi(rows[0]) });
     } catch (err) {
       if (err.name === "ZodError") return res.status(400).json({ error: err.issues[0]?.message || "Invalid input." });
