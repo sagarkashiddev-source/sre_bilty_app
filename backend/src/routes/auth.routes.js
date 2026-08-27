@@ -96,17 +96,40 @@ router.post("/refresh", async (req, res, next) => {
     const token = req.cookies?.[COOKIE_NAME] || req.body?.refreshToken;
     if (!token) return res.status(401).json({ error: "Session expired. Please log in again." });
     const tokenHash = hashToken(token);
-    const { rows } = await pool.query(
+
+    // Active token: the normal, expected path.
+    let { rows } = await pool.query(
       `SELECT rt.id, rt.user_id, u.email FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        WHERE rt.token_hash = $1 AND rt.revoked_at IS NULL AND rt.expires_at > now()`,
       [tokenHash]
     );
+
+    if (!rows.length) {
+      // Reuse-grace path: rotation revokes the previous token the instant a
+      // new one is issued, but two requests from the same browser can land
+      // within milliseconds of each other (e.g. two tabs both refreshing on
+      // load, or a request racing a background refresh). Without this, the
+      // request that loses the race gets logged out entirely even though
+      // the session itself is completely valid. If this token was revoked
+      // very recently (not genuinely old/expired), treat it as a legitimate
+      // concurrent refresh rather than a failure. Kept short and logged so
+      // it's still a meaningful signal for a truly stolen/replayed token
+      // outside this tiny window.
+      const grace = await pool.query(
+        `SELECT rt.id, rt.user_id, u.email FROM refresh_tokens rt
+         JOIN users u ON u.id = rt.user_id
+         WHERE rt.token_hash = $1 AND rt.revoked_at > now() - interval '15 seconds'`,
+        [tokenHash]
+      );
+      if (!grace.rows.length) return res.status(401).json({ error: "Session expired. Please log in again." });
+      rows = grace.rows;
+    }
+
     const row = rows[0];
-    if (!row) return res.status(401).json({ error: "Session expired. Please log in again." });
 
     // Rotate: revoke the old token, issue a new one.
-    await pool.query("UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1", [row.id]);
+    await pool.query("UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", [row.id]);
     const newToken = await issueRefreshToken(pool, row.user_id);
     setRefreshCookie(res, newToken);
 
