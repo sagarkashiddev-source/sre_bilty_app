@@ -131,6 +131,18 @@ function prevMonthRange(dateStr) {
 }
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
+
+function billingMonthRange(monthKey, fallbackDate) {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey || "");
+  if (!match) return prevMonthRange(fallbackDate);
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const first = new Date(year, monthIndex, 1);
+  const last = new Date(year, monthIndex + 1, 0);
+  const fmtD = (dt) => `${String(dt.getDate()).padStart(2, "0")} ${MONTH_NAMES[dt.getMonth()]} ${dt.getFullYear()}`;
+  return `${fmtD(first)} to ${fmtD(last)}`;
+}
+
 function dispDate(iso) {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
@@ -713,7 +725,7 @@ export default function App() {
         id: uid(), companyId: company ? company.id : "", customerId: "",
         customerSnapshot: { name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", sameAsBilling: true, state: "" },
         invoiceNo: "(assigned on save)",
-        invoiceDate: todayISO(), items: [], notes: "", status: "draft", finalized: false, createdAt: Date.now(),
+        invoiceDate: todayISO(), billingMonth: (() => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })(), items: [], notes: "", status: "draft", finalized: false, createdAt: Date.now(),
       };
     setDraftInvoice(inv);
     setView("edit");
@@ -744,6 +756,7 @@ export default function App() {
       customerSnapshot: JSON.parse(JSON.stringify(payload.customerSnapshot || { name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", sameAsBilling: true, state: "" })),
       invoiceNo: "(assigned on save)",
       invoiceDate: date,
+      billingMonth: (() => { const d = new Date(date + "T00:00:00"); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); })(),
       items: (payload.items || []).map((it) => ({ ...it, id: uid(), description: (it.description || "").replace(/\(.*\)$/, `(${range})`) })),
       notes: payload.notes || "", status: "draft", finalized: false, createdAt: Date.now(),
     };
@@ -1107,7 +1120,7 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
   };
 
   const addItem = (preset) => {
-    const range = prevMonthRange(draft.invoiceDate);
+    const range = billingMonthRange(draft.billingMonth, draft.invoiceDate);
     const item = { id: uid(), description: preset ? `${preset.desc} (${range})` : "", hsn: preset ? preset.hsn : "", qty: 1, rate: "", taxRate: 18 };
     update({ items: [...draft.items, item] });
   };
@@ -1242,6 +1255,19 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
           <div className="two-col">
             <Field label="Invoice No."><input value={draft.invoiceNo} onChange={(e) => update({ invoiceNo: e.target.value })} disabled={locked} /></Field>
             <Field label="Invoice Date"><input type="date" value={draft.invoiceDate} onChange={(e) => update({ invoiceDate: e.target.value })} disabled={locked} /></Field>
+          </div>
+          <div className="two-col">
+            <Field label="Billing Month" hint="Choose the month this bill is for — useful for entering old bills">
+              <input
+                type="month"
+                value={draft.billingMonth || ""}
+                onChange={(e) => update({ billingMonth: e.target.value })}
+                disabled={locked}
+              />
+            </Field>
+            <Field label="Bill Period">
+              <input value={billingMonthRange(draft.billingMonth, draft.invoiceDate)} disabled />
+            </Field>
           </div>
           <div className="two-col">
             <Field label="Due date" hint="Used to flag invoices overdue"><input type="date" value={draft.dueDate || ""} onChange={(e) => update({ dueDate: e.target.value })} disabled={locked} /></Field>
