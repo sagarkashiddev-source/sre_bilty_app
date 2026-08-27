@@ -585,20 +585,6 @@ export default function App() {
     else if (authUser === null) setLoading(false);
   }, [authUser, loadEverything]);
 
-  // One-time recovery offer for a draft that was being edited when the browser/tab closed unexpectedly.
-  useEffect(() => {
-    if (loading || !authUser) return;
-    const cached = draftCache.load();
-    if (cached && !invoices.some((i) => i.id === cached.id)) {
-      if (window.confirm(`Recover your unsaved invoice draft "${cached.invoiceNo || "(new invoice)"}" from earlier? Choose Cancel to discard it.`)) {
-        setDraftInvoice(cached);
-        setView("edit");
-      } else {
-        draftCache.clear();
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, authUser]);
 
   /** Diffs a full-array "next" list (the existing UI's save pattern) into create/update/delete API calls. */
   async function diffAndSync(prevList, nextList, { create, update, remove }) {
@@ -2446,4 +2432,3 @@ input:focus, select:focus, textarea:focus{outline:2px solid var(--gold); outline
   .inv-logo-float{left:50%; top:14px; transform:translateX(-50%);}
 }
 `;
-
