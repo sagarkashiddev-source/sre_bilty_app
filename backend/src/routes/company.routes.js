@@ -97,8 +97,30 @@ router.put("/:id", async (req, res, next) => {
 
 router.delete("/:id", async (req, res, next) => {
   try {
-    const { rowCount } = await pool.query("DELETE FROM companies WHERE id = $1 AND user_id = $2", [req.params.id, req.userId]);
-    if (!rowCount) return res.status(404).json({ error: "Company not found." });
+    const existing = await pool.query("SELECT id FROM companies WHERE id = $1 AND user_id = $2", [req.params.id, req.userId]);
+    if (!existing.rows.length) return res.status(404).json({ error: "Company not found." });
+
+    // Never allow a company with real business history to be hard-deleted —
+    // the previous version deleted unconditionally, which cascades to every
+    // invoice, customer, product, and payment under it with no way back.
+    // The frontend already offers "archive instead" for this case; the API
+    // now enforces the same rule so it can't be bypassed by any client.
+    const { rows: counts } = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM invoices WHERE company_id = $1) AS invoices,
+         (SELECT COUNT(*) FROM customers WHERE company_id = $1) AS customers,
+         (SELECT COUNT(*) FROM products WHERE company_id = $1) AS products`,
+      [req.params.id]
+    );
+    const { invoices, customers, products } = counts[0];
+    if (Number(invoices) > 0 || Number(customers) > 0 || Number(products) > 0) {
+      return res.status(409).json({
+        error: "This company has invoices, customers, or products on record and can't be permanently deleted. Archive it instead (set it inactive) to keep your history intact.",
+        hasHistory: true,
+      });
+    }
+
+    await pool.query("DELETE FROM companies WHERE id = $1 AND user_id = $2", [req.params.id, req.userId]);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
