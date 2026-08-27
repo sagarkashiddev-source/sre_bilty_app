@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as api from "./services/api";
-import { draftCache } from "./services/offlineCache";
-
 /* ============================== helpers ============================== */
 
 /** Browser-safe identifier.  The server must replace this with a database UUID. */
@@ -2431,4 +2429,3 @@ input:focus, select:focus, textarea:focus{outline:2px solid var(--gold); outline
   .inv-company-block{padding-left:14px; padding-top:60px;}
   .inv-logo-float{left:50%; top:14px; transform:translateX(-50%);}
 }
-`;
