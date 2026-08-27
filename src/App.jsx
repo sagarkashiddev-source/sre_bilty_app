@@ -655,15 +655,24 @@ export default function App() {
     const original = invoices.find((i) => i.id === inv.id);
     const exists = !!original;
     try {
+      let saved;
       if (exists) {
         const row = await api.Invoices.update(inv.id, invoiceToApiPayload(inv));
-        setInvoices((prev) => prev.map((i) => (i.id === inv.id ? invoiceFromApi(row) : i)));
+        saved = invoiceFromApi(row);
+        setInvoices((prev) => prev.map((i) => (i.id === inv.id ? saved : i)));
       } else {
         const row = await api.Invoices.create(invoiceToApiPayload(inv));
-        setInvoices((prev) => [invoiceFromApi(row), ...prev]);
+        saved = invoiceFromApi(row);
+        setInvoices((prev) => [saved, ...prev]);
       }
       draftCache.clear();
       notify(exists ? "Invoice updated" : "Invoice created");
+      // Return the server's copy (real id + real invoice number) so the caller
+      // can sync it back into the open form. Without this, the form keeps
+      // using its original local-only id, so the *next* save can't find a
+      // matching invoice and silently creates a duplicate with a fresh number
+      // instead of updating this one.
+      return saved;
     } catch (e) {
       throw new Error(e.message || "Unable to save invoice. Please check your connection and try again.");
     }
@@ -1172,7 +1181,20 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
     const problem = validate();
     if (problem) { setErr(problem); return; }
     setErr("");
-    try { await persistCustomerAndTemplateIfNeeded(); if (goPreviewAfter) onPreview(draft); else await onSave(draft); }
+    try {
+      await persistCustomerAndTemplateIfNeeded();
+      if (goPreviewAfter) {
+        onPreview(draft);
+      } else {
+        const saved = await onSave(draft);
+        // Sync the server's real id + invoice number back into this form.
+        // Without this, a second "Save Draft" click can't find this invoice
+        // again (it's still looking for the old local-only id) and ends up
+        // creating a second, duplicate invoice with a new number instead of
+        // updating this one — see saveInvoice() for the full explanation.
+        if (saved) setDraft(saved);
+      }
+    }
     catch (e) { setErr(e.message || "Unable to save the invoice. Please retry."); }
   };
 
@@ -1183,7 +1205,9 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
     try {
       await persistCustomerAndTemplateIfNeeded();
       const finalized = { ...draft, finalized: true, status: draft.status === "draft" ? "sent" : draft.status };
-      setDraft(finalized); await onSave(finalized); notify("Invoice finalized and locked");
+      const saved = await onSave(finalized);
+      if (saved) setDraft(saved);
+      notify("Invoice finalized and locked");
     } catch (e) { setErr(e.message || "Unable to finalize the invoice. Please retry."); }
   };
 
@@ -1198,11 +1222,6 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
     const t = setTimeout(() => { draftCache.save(draft); setAutosavedAt(new Date()); }, 600);
     return () => clearTimeout(t);
   }, [draft, locked]);
-  useEffect(() => {
-    window.location.reload();
-    console.log("invoice update");
-  }, []);
-
 
   return (
     <div className="page">
@@ -1361,9 +1380,6 @@ function History({ invoices, companies, companyById, onEdit, onDelete, onDuplica
     }
     return true;
   });
-useEffect(() => {
-    console.log("update");
-  }, []);
 
   return (
     <div className="page">
