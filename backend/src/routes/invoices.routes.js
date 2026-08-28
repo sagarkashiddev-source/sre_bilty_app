@@ -41,6 +41,7 @@ const invoiceSchema = z.object({
   customerId: z.string().uuid().optional().nullable(),
   invoiceDate: z.string().min(1),
   dueDate: z.string().optional().nullable(),
+  billingMonth: z.string().regex(/^\d{4}-\d{2}$/, "Billing month must be in YYYY-MM format.").optional().nullable(),
   notes: z.string().optional().nullable(),
   terms: z.string().optional().nullable(),
   discount: nonNegativeAmount.optional().nullable(),
@@ -126,6 +127,7 @@ function invoiceToApi(row, items) {
     invoiceNumber: row.invoice_number,
     invoiceDate: row.invoice_date,
     dueDate: row.due_date,
+    billingMonth: row.billing_month,
     status: row.status,
     finalized: row.finalized,
     subtotal: fromPaise(BigInt(row.subtotal_paise)),
@@ -222,12 +224,12 @@ router.post("/", requireCompanyOwnership, async (req, res, next) => {
 
       const { rows } = await client.query(
         `INSERT INTO invoices
-          (company_id, customer_id, customer_snapshot, invoice_number, invoice_date, due_date, status, finalized,
+          (company_id, customer_id, customer_snapshot, invoice_number, invoice_date, due_date, billing_month, status, finalized,
            subtotal_paise, discount_paise, taxable_amount_paise, cgst_paise, sgst_paise, igst_paise, round_off_paise,
            grand_total_paise, notes, terms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
         [req.companyId, body.customerId || null, customer ? JSON.stringify(customer) : null, invoiceNumber,
-         body.invoiceDate, body.dueDate || null, status, body.finalize,
+         body.invoiceDate, body.dueDate || null, body.billingMonth || null, status, body.finalize,
          computed.subtotalPaise.toString(), discountPaise.toString(), computed.taxableAmountPaise.toString(),
          computed.cgstPaise.toString(), computed.sgstPaise.toString(), computed.igstPaise.toString(),
          computed.roundOffPaise.toString(), grandTotalPaise.toString(), body.notes || null, body.terms || null]
@@ -265,12 +267,12 @@ router.put("/:id", loadOwnedInvoice, async (req, res, next) => {
       const status = body.finalize ? "sent" : "draft";
 
       const { rows } = await client.query(
-        `UPDATE invoices SET customer_id=$1, customer_snapshot=$2, invoice_date=$3, due_date=$4, status=$5, finalized=$6,
-           subtotal_paise=$7, discount_paise=$8, taxable_amount_paise=$9, cgst_paise=$10, sgst_paise=$11, igst_paise=$12,
-           round_off_paise=$13, grand_total_paise=$14, notes=$15, terms=$16
-         WHERE id=$17 RETURNING *`,
+        `UPDATE invoices SET customer_id=$1, customer_snapshot=$2, invoice_date=$3, due_date=$4, billing_month=$5, status=$6, finalized=$7,
+           subtotal_paise=$8, discount_paise=$9, taxable_amount_paise=$10, cgst_paise=$11, sgst_paise=$12, igst_paise=$13,
+           round_off_paise=$14, grand_total_paise=$15, notes=$16, terms=$17
+         WHERE id=$18 RETURNING *`,
         [body.customerId || null, customer ? JSON.stringify(customer) : null, body.invoiceDate, body.dueDate || null,
-         status, body.finalize, computed.subtotalPaise.toString(), discountPaise.toString(), computed.taxableAmountPaise.toString(),
+         body.billingMonth || null, status, body.finalize, computed.subtotalPaise.toString(), discountPaise.toString(), computed.taxableAmountPaise.toString(),
          computed.cgstPaise.toString(), computed.sgstPaise.toString(), computed.igstPaise.toString(),
          computed.roundOffPaise.toString(), grandTotalPaise.toString(), body.notes || null, body.terms || null, req.params.id]
       );
@@ -340,12 +342,12 @@ router.post("/:id/duplicate", loadOwnedInvoice, async (req, res, next) => {
       const invoiceNumber = await nextInvoiceNumber(client, src.company_id, newInvoiceDate);
       const { rows } = await client.query(
         `INSERT INTO invoices
-          (company_id, customer_id, customer_snapshot, invoice_number, invoice_date, due_date, status, finalized,
+          (company_id, customer_id, customer_snapshot, invoice_number, invoice_date, due_date, billing_month, status, finalized,
            subtotal_paise, discount_paise, taxable_amount_paise, cgst_paise, sgst_paise, igst_paise, round_off_paise,
            grand_total_paise, notes, terms, duplicated_from)
-         VALUES ($1,$2,$3,$4,$5,$6,'draft',false,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',false,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
         [src.company_id, src.customer_id, src.customer_snapshot, invoiceNumber,
-         newInvoiceDate, src.due_date,
+         newInvoiceDate, src.due_date, src.billing_month,
          src.subtotal_paise, src.discount_paise, src.taxable_amount_paise, src.cgst_paise, src.sgst_paise,
          src.igst_paise, src.round_off_paise, src.grand_total_paise, src.notes, src.terms, src.id]
       );

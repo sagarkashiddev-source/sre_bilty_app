@@ -382,6 +382,7 @@ function invoiceToApiPayload(inv) {
     customerId: inv.customerId || null,
     invoiceDate: inv.invoiceDate,
     dueDate: inv.dueDate || null,
+    billingMonth: inv.billingMonth || null,
     notes: inv.notes || "",
     terms: inv.terms || "",
     items: (inv.items || []).map((it) => ({
@@ -405,6 +406,7 @@ function invoiceFromApi(row) {
     invoiceNo: row.invoiceNumber || "(assigned on save)",
     invoiceDate: (row.invoiceDate || "").slice(0, 10),
     dueDate: row.dueDate ? row.dueDate.slice(0, 10) : "",
+    billingMonth: row.billingMonth || "",
     items: (row.items || []).map((it) => ({ id: it.id, productId: it.productId || "", description: it.productName, hsn: it.hsnSac || "", qty: it.quantity, rate: it.rate, taxRate: it.gstRate })),
     notes: row.notes || "", status: row.status, finalized: row.finalized, createdAt: row.createdAt,
     deleted: row.deleted,
@@ -596,6 +598,25 @@ export default function App() {
     if (authUser) loadEverything();
     else if (authUser === null) setLoading(false);
   }, [authUser, loadEverything]);
+
+  // One-time recovery offer for a draft that was being edited when the browser/tab closed unexpectedly.
+  // Skips genuinely empty drafts (no items, no customer picked) so a stray autosave from just opening
+  // "New Invoice" and immediately navigating away doesn't nag you with a pointless recovery prompt.
+  useEffect(() => {
+    if (loading || !authUser) return;
+    const cached = draftCache.load();
+    if (!cached || invoices.some((i) => i.id === cached.id)) return;
+    const hasContent = (cached.items || []).length > 0 || !!cached.customerId || !!(cached.customerSnapshot && cached.customerSnapshot.name);
+    if (!hasContent) { draftCache.clear(); return; }
+    const label = cached.invoiceNo && cached.invoiceNo !== "(assigned on save)" ? cached.invoiceNo : "this unsaved invoice";
+    if (window.confirm(`Recover ${label} from earlier? It wasn't saved before the page closed. Choose Cancel to discard it.`)) {
+      setDraftInvoice(cached);
+      setView("edit");
+    } else {
+      draftCache.clear();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, authUser]);
 
 
   /** Diffs a full-array "next" list (the existing UI's save pattern) into create/update/delete API calls. */
