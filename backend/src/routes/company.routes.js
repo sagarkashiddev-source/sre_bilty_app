@@ -16,6 +16,7 @@ const companySchema = z.object({
   stateCode: z.string().trim().optional().nullable(),
   logoStyle: z.string().trim().optional().nullable(),
   logoColor: z.string().trim().optional().nullable(),
+  logoUrl: z.string().trim().max(2_000_000, "Logo image is too large.").optional().nullable(),
   bankDetails: z.record(z.any()).optional().nullable(),
   terms: z.string().trim().optional().nullable(),
 });
@@ -51,11 +52,11 @@ router.post("/", async (req, res, next) => {
   try {
     const body = companySchema.parse(req.body);
     const { rows } = await pool.query(
-      `INSERT INTO companies (user_id, company_name, gstin, address, phone, email, state, state_code, logo_style, logo_color, bank_details, terms)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      `INSERT INTO companies (user_id, company_name, gstin, address, phone, email, state, state_code, logo_style, logo_color, logo_url, bank_details, terms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [req.userId, body.companyName, body.gstin || null, body.address || null, body.phone || null, body.email || null,
        body.state || null, body.stateCode || null, body.logoStyle || "custom", body.logoColor || "#C6332B",
-       JSON.stringify(body.bankDetails || {}), body.terms || null]
+       body.logoUrl || null, JSON.stringify(body.bankDetails || {}), body.terms || null]
     );
     res.status(201).json({ company: toApi(rows[0]) });
   } catch (err) {
@@ -81,11 +82,12 @@ router.put("/:id", async (req, res, next) => {
          state_code = COALESCE($7, state_code),
          logo_style = COALESCE($8, logo_style),
          logo_color = COALESCE($9, logo_color),
-         bank_details = COALESCE($10, bank_details),
-         terms = COALESCE($11, terms)
-       WHERE id = $12 AND user_id = $13 RETURNING *`,
+         logo_url = COALESCE($10, logo_url),
+         bank_details = COALESCE($11, bank_details),
+         terms = COALESCE($12, terms)
+       WHERE id = $13 AND user_id = $14 RETURNING *`,
       [body.companyName, body.gstin, body.address, body.phone, body.email, body.state, body.stateCode,
-       body.logoStyle, body.logoColor, body.bankDetails ? JSON.stringify(body.bankDetails) : null, body.terms,
+       body.logoStyle, body.logoColor, body.logoUrl, body.bankDetails ? JSON.stringify(body.bankDetails) : null, body.terms,
        req.params.id, req.userId]
     );
     res.json({ company: toApi(rows[0]) });

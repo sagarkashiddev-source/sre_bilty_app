@@ -337,7 +337,7 @@ function companyFromApi(row) {
     ifsc: extra.ifsc || "", branch: extra.branch || "",
     invoicePrefix: extra.invoicePrefix ?? "INV-", invoiceStartNumber: extra.invoiceStartNumber ?? 1,
     numberPadding: extra.numberPadding ?? 3, fyResetEnabled: !!extra.fyResetEnabled,
-    logoStyle: row.logoStyle || "custom", logoColor: row.logoColor || "#C6332B",
+    logoStyle: row.logoStyle || "custom", logoColor: row.logoColor || "#C6332B", logoUrl: row.logoUrl || "",
     active: extra.active !== false,
   };
 }
@@ -345,7 +345,7 @@ function companyToApi(c) {
   return {
     companyName: c.name, gstin: c.gstin || "", address: c.address || "", phone: c.mobile || "",
     email: c.email || "", state: stateFromGSTIN(c.gstin) || "", logoStyle: c.logoStyle || "custom",
-    logoColor: c.logoColor || "#C6332B",
+    logoColor: c.logoColor || "#C6332B", logoUrl: c.logoUrl || null,
     bankDetails: {
       pan: c.pan || "", website: c.website || "-", bankName: c.bankName || "", accountNo: c.accountNo || "",
       ifsc: c.ifsc || "", branch: c.branch || "", invoicePrefix: c.invoicePrefix || "INV-",
@@ -468,7 +468,16 @@ function LogoCustom({ color = "#C6332B", size = 40 }) {
   );
 }
 
-function Logo({ style = "custom", color = "#C6332B", size = 40 }) {
+function LogoUploaded({ url, size = 40 }) {
+  return (
+    <span className="logo-img-wrap" style={{ height: size }}>
+      <img src={url} alt="Company logo" style={{ height: size, maxWidth: size * 2.5, objectFit: "contain" }} />
+    </span>
+  );
+}
+
+function Logo({ style = "custom", color = "#C6332B", url = "", size = 40 }) {
+  if (style === "uploaded" && url) return <LogoUploaded url={url} size={size} />;
   if (style === "sagar") return <LogoSagar size={size} />;
   if (style === "ssk") return <LogoSSK size={size} />;
   return <LogoCustom color={color} size={size} />;
@@ -733,6 +742,38 @@ export default function App() {
     notify("Payment recorded");
   };
 
+  // Issuing a credit note (e.g. goods returned, billing correction, negotiated
+  // discount after the fact) needs its own invoice-facing number, distinct
+  // from the invoice number itself. There's no server-side counter for these
+  // (unlike invoices), so it's generated here from the invoice's own number
+  // plus a running suffix per invoice — traceable at a glance and never
+  // collides, since it's scoped to how many notes already exist against
+  // this specific invoice.
+  const recordCreditNote = async ({ invoiceId, amount, reason }) => {
+    const inv = invoices.find((i) => i.id === invoiceId); if (!inv || !isBillable(inv)) throw new Error("Credit notes can only be issued against finalized, active invoices.");
+    const company = companyById(inv.companyId);
+    const totalPaise = invoiceBalance(inv, payments, creditNotes, debitNotes, company).totalPaise;
+    const alreadyCreditedPaise = sumPaise(creditNotes, (n) => n.invoiceId === inv.id && n.status === "issued");
+    const amountPaise = toPaise(amount);
+    if (amountPaise <= 0 || amountPaise > totalPaise - alreadyCreditedPaise) {
+      throw new Error("Credit note amount must be greater than zero and cannot exceed the invoice's remaining creditable value.");
+    }
+    const existingForInvoice = creditNotes.filter((n) => n.invoiceId === inv.id).length;
+    const noteNumber = `CN-${inv.invoiceNo}-${String(existingForInvoice + 1).padStart(2, "0")}`;
+    const row = await api.CreditNotes.create({
+      companyId: inv.companyId, invoiceId: inv.id, noteNumber, amount: fromPaise(amountPaise),
+      reason: reason || "", issuedOn: todayISO(),
+    });
+    const saved = { id: row.id, invoiceId: inv.id, companyId: inv.companyId, noteNumber: row.noteNumber, amountPaise, reason: row.reason, status: row.status, issuedOn: row.issuedOn, createdAt: row.createdAt };
+    const nextCreditNotes = [saved, ...creditNotes]; setCreditNotes(nextCreditNotes);
+    const status = deriveInvoiceStatus(inv, payments, nextCreditNotes, debitNotes, company);
+    if (status !== inv.status) {
+      const updated = await api.Invoices.setStatus(inv.id, status);
+      setInvoices((prev) => prev.map((i) => (i.id === inv.id ? invoiceFromApi(updated) : i)));
+    }
+    notify("Credit note issued");
+  };
+
   const companyById = useCallback((id) => companies.find((c) => c.id === id), [companies]);
 
   /** Invoice numbers are assigned atomically by the backend (per company, sequential) — this is display-only until save. */
@@ -921,7 +962,7 @@ export default function App() {
             onView={(id) => setPreviewId(id)} onStatus={setInvoiceStatus} />
         )}
 
-        {view === "payments" && <Payments invoices={invoices} payments={payments} creditNotes={creditNotes} debitNotes={debitNotes} companyById={companyById} onRecord={recordPayment} onView={(id) => setPreviewId(id)} />}
+        {view === "payments" && <Payments invoices={invoices} payments={payments} creditNotes={creditNotes} debitNotes={debitNotes} companyById={companyById} onRecord={recordPayment} onRecordCreditNote={recordCreditNote} onView={(id) => setPreviewId(id)} />}
 
         {view === "ledger" && (
           <CustomerLedger invoices={invoices} customers={customers} payments={payments} creditNotes={creditNotes} debitNotes={debitNotes} companyById={companyById} onView={(id) => setPreviewId(id)} onRecord={recordPayment} />
@@ -1071,7 +1112,7 @@ function Dashboard({ stats, companies, invoices, companyById, onNew, onOpenHisto
                 {extra.companyBreakdown.map(({ company, billed, outstanding }) => (
                   <div className="company-bar-row" key={company.id}>
                     <div className="row-gap" style={{ alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <Logo style={company.logoStyle} color={company.logoColor} size={22} />
+                      <Logo style={company.logoStyle} color={company.logoColor} url={company.logoUrl} size={22} />
                       <span className="company-bar-name">{company.name || "Untitled"}</span>
                     </div>
                     <div className="company-bar-track">
@@ -1122,6 +1163,7 @@ function Dashboard({ stats, companies, invoices, companyById, onNew, onOpenHisto
 function InvoiceForm({ draft, setDraft, companies, customers, products, persistCustomers, nextInvoiceNo, isDuplicateInvoiceNo, templates, persistTemplates, notify, online, onCancel, onSave, onPreview }) {
   const company = companies.find((c) => c.id === draft.companyId);
   const companyProducts = (products || []).filter((p) => p.companyId === draft.companyId);
+  const companyCustomers = (customers || []).filter((c) => c.companyId === draft.companyId);
   const [saveAsCustomer, setSaveAsCustomer] = useState(false);
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
 
@@ -1129,7 +1171,7 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
   const updateCust = (patch) => setDraft({ ...draft, customerSnapshot: { ...draft.customerSnapshot, ...patch } });
 
   const pickCustomer = (id) => {
-    const c = customers.find((x) => x.id === id);
+    const c = companyCustomers.find((x) => x.id === id);
     if (!c) { update({ customerId: "", customerSnapshot: { name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", sameAsBilling: true, state: "" } }); return; }
     update({
       customerId: id,
@@ -1157,7 +1199,19 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
   const removeItem = (id) => update({ items: draft.items.filter((i) => i.id !== id) });
 
   const totals = computeInvoice(draft, company, draft.customerSnapshot);
-  const handleCompanyChange = (id) => update({ companyId: id, invoiceNo: nextInvoiceNo(id, draft.invoiceDate) });
+  // Switching companies mid-invoice used to leave the previously-selected
+  // customer (and their auto-filled name/GSTIN/address) attached, even
+  // though that customer belongs to a DIFFERENT company - so the invoice
+  // looked "broken": the customer dropdown still showed a name, but it
+  // didn't match the newly selected company's actual customer list, and
+  // saving would attach a customer to the wrong company's invoice. Company
+  // switches now clear the customer selection, same as starting fresh.
+  const handleCompanyChange = (id) => update({
+    companyId: id,
+    invoiceNo: nextInvoiceNo(id, draft.invoiceDate),
+    customerId: "",
+    customerSnapshot: { name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", sameAsBilling: true, state: "" },
+  });
   const locked = draft.finalized === true;
 
   const companyGstin = validateGSTIN(company?.gstin);
@@ -1184,8 +1238,15 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
 
   const persistCustomerAndTemplateIfNeeded = async () => {
     if (saveAsCustomer && draft.customerSnapshot.name) {
-      const exists = customers.find((c) => c.gstin && c.gstin === draft.customerSnapshot.gstin);
-      if (!exists) await persistCustomers([...customers, { id: uid(), ...draft.customerSnapshot }]);
+      // Scoped to the currently selected company on both counts: the
+      // duplicate-GSTIN check only looks at THIS company's customers (a
+      // shared GSTIN across two different companies you bill for is a
+      // legitimate case, not a duplicate), and the new record is tagged
+      // with companyId explicitly - previously it inherited whichever
+      // company happened to be first in the list, silently filing new
+      // customers under the wrong company whenever you weren't on that one.
+      const exists = companyCustomers.find((c) => c.gstin && c.gstin === draft.customerSnapshot.gstin);
+      if (!exists) await persistCustomers([...customers, { id: uid(), companyId: draft.companyId, ...draft.customerSnapshot }]);
     }
     if (saveAsTemplate) {
       await persistTemplates([...templates, {
@@ -1303,7 +1364,7 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
           <Field label="Load saved customer (optional)">
             <select value={draft.customerId} onChange={(e) => pickCustomer(e.target.value)} disabled={locked}>
               <option value="">— enter manually —</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {companyCustomers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </Field>
           <Field label="Customer / Company name"><input value={draft.customerSnapshot.name} onChange={(e) => updateCust({ name: e.target.value })} disabled={locked} /></Field>
@@ -1570,7 +1631,7 @@ function CustomerLedger({ invoices, customers, payments, creditNotes, debitNotes
 
 /* ============================== Recurring templates ============================== */
 
-function Payments({ invoices, payments, creditNotes, debitNotes, companyById, onRecord, onView }) {
+function Payments({ invoices, payments, creditNotes, debitNotes, companyById, onRecord, onRecordCreditNote, onView }) {
   const [invoiceId, setInvoiceId] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("bank_transfer");
@@ -1581,9 +1642,26 @@ function Payments({ invoices, payments, creditNotes, debitNotes, companyById, on
     try { setError(""); await onRecord({ invoiceId, amount, paymentMethod, referenceNumber, paymentDate: todayISO() }); setInvoiceId(""); setAmount(""); setReferenceNumber(""); }
     catch (e) { setError(e.message || "Unable to record payment."); }
   };
+
+  const [cnInvoiceId, setCnInvoiceId] = useState("");
+  const [cnAmount, setCnAmount] = useState("");
+  const [cnReason, setCnReason] = useState("");
+  const [cnError, setCnError] = useState("");
+  // Any finalized, active invoice can receive a credit note — not just ones
+  // with an outstanding balance, since a credit note also covers goods
+  // returned or a correction on an invoice that's already been fully paid.
+  const creditableInvoices = invoices.filter(isBillable);
+  const submitCreditNote = async () => {
+    try { setCnError(""); await onRecordCreditNote({ invoiceId: cnInvoiceId, amount: cnAmount, reason: cnReason }); setCnInvoiceId(""); setCnAmount(""); setCnReason(""); }
+    catch (e) { setCnError(e.message || "Unable to issue credit note."); }
+  };
+
   return <div className="page"><div className="page-head"><div><h1>Payments</h1><p className="muted">Payments are immutable financial transactions; use a reversal/correction workflow in the backend, never a silent edit.</p></div></div>
     <div className="card"><h3>Record payment</h3>{error && <div className="error-banner">{error}</div>}<div className="two-col"><Field label="Invoice"><select value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)}><option value="">Select an outstanding invoice…</option>{openInvoices.map((i) => { const b = invoiceBalance(i, payments, creditNotes, debitNotes, companyById(i.companyId)); return <option key={i.id} value={i.id}>{i.invoiceNo} — {i.customerSnapshot?.name} (₹{fmt(b.outstandingPaise / 100)} due)</option>; })}</select></Field><Field label="Amount"><input type="number" min="0.01" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field><Field label="Method"><select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}><option value="bank_transfer">Bank transfer</option><option value="upi">UPI</option><option value="cash">Cash</option><option value="cheque">Cheque</option></select></Field><Field label="Reference / UTR"><input value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} /></Field></div><button className="primary-btn" disabled={!invoiceId || !amount} onClick={submit}>Record payment</button></div>
     <div className="card"><h3>Recent payments</h3>{payments.length === 0 ? <p className="muted">No payments recorded.</p> : <table className="table"><thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th>Method</th><th>Reference</th><th>Amount</th></tr></thead><tbody>{payments.map((p) => { const inv = invoices.find((i) => i.id === p.invoiceId); return <tr key={p.id}><td>{dispDate(p.paymentDate)}</td><td><button className="link-btn" onClick={() => inv && onView(inv.id)}>{inv?.invoiceNo || "Deleted invoice"}</button></td><td>{inv?.customerSnapshot?.name || "—"}</td><td>{p.paymentMethod}</td><td>{p.referenceNumber || "—"}</td><td>₹{fmt(p.amountPaise / 100)}</td></tr>; })}</tbody></table>}</div>
+
+    <div className="card"><h3>Issue credit note</h3><p className="muted small">For returns, corrections, or a discount agreed after the invoice was finalized. Reduces what's owed (or refunds an already-paid invoice) without editing the original invoice.</p>{cnError && <div className="error-banner">{cnError}</div>}<div className="two-col"><Field label="Invoice"><select value={cnInvoiceId} onChange={(e) => setCnInvoiceId(e.target.value)}><option value="">Select an invoice…</option>{creditableInvoices.map((i) => <option key={i.id} value={i.id}>{i.invoiceNo} — {i.customerSnapshot?.name}</option>)}</select></Field><Field label="Amount"><input type="number" min="0.01" step="0.01" value={cnAmount} onChange={(e) => setCnAmount(e.target.value)} /></Field><Field label="Reason (optional)"><input value={cnReason} onChange={(e) => setCnReason(e.target.value)} placeholder="e.g. Goods returned, billing correction" /></Field></div><button className="primary-btn" disabled={!cnInvoiceId || !cnAmount} onClick={submitCreditNote}>Issue credit note</button></div>
+    <div className="card"><h3>Credit notes issued</h3>{creditNotes.length === 0 ? <p className="muted">No credit notes issued yet.</p> : <table className="table"><thead><tr><th>Date</th><th>Note #</th><th>Invoice</th><th>Customer</th><th>Reason</th><th>Amount</th></tr></thead><tbody>{creditNotes.map((n) => { const inv = invoices.find((i) => i.id === n.invoiceId); return <tr key={n.id}><td>{dispDate(n.issuedOn)}</td><td>{n.noteNumber}</td><td><button className="link-btn" onClick={() => inv && onView(inv.id)}>{inv?.invoiceNo || "Deleted invoice"}</button></td><td>{inv?.customerSnapshot?.name || "—"}</td><td>{n.reason || "—"}</td><td>₹{fmt(n.amountPaise / 100)}</td></tr>; })}</tbody></table>}</div>
   </div>;
 }
 
@@ -1785,7 +1863,7 @@ function CompanyTracker({ invoices, companies, companyById, onView }) {
               <div className="row-gap" style={{ justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
                 onClick={() => setOpenId(isOpen ? null : b.company.id)}>
                 <div className="row-gap" style={{ alignItems: "center", gap: 12 }}>
-                  <Logo style={b.company.logoStyle} color={b.company.logoColor} size={32} />
+                  <Logo style={b.company.logoStyle} color={b.company.logoColor} url={b.company.logoUrl} size={32} />
                   <div>
                     <div className="entity-title">{b.company.name || "Untitled company"}</div>
                     <div className="muted small">{b.invoiceCount} invoice{b.invoiceCount === 1 ? "" : "s"} · {b.paidCount} paid · {b.unpaidCount} unpaid</div>
@@ -1866,7 +1944,7 @@ function emptyCompany() {
     id: uid(), name: "", gstin: "", pan: "", address: "", mobile: "", email: "", website: "-",
     bankName: "", accountNo: "", ifsc: "", branch: "", invoicePrefix: "INV-",
     invoiceStartNumber: 1, numberPadding: 3, fyResetEnabled: false,
-    logoStyle: "custom", logoColor: "#C6332B",
+    logoStyle: "custom", logoColor: "#C6332B", logoUrl: "",
   };
 }
 
@@ -1891,7 +1969,7 @@ function CompanyManager({ companies, invoices, onSave, notify }) {
         {companies.map((c) => (
           <div className="card entity-card" key={c.id}>
             <div className="entity-head">
-              <Logo style={c.logoStyle} color={c.logoColor} size={30} />
+              <Logo style={c.logoStyle} color={c.logoColor} url={c.logoUrl} size={30} />
               <div><div className="entity-title">{c.name}</div><div className="muted small">{c.gstin}</div></div>
             </div>
             <p className="muted small">{c.address}</p>
@@ -1903,6 +1981,83 @@ function CompanyManager({ companies, invoices, onSave, notify }) {
         ))}
       </div>
       {editing && <CompanyEditModal company={editing} onCancel={() => setEditing(null)} onSave={upsert} />}
+    </div>
+  );
+}
+
+/**
+ * Handles picking a logo image file, resizing it client-side, and handing
+ * the caller back a compact data URL — so we never store or send a
+ * multi-megabyte phone photo straight into the database. SVGs are kept
+ * as-is (already tiny, scale losslessly); raster images are downscaled to
+ * fit within LOGO_MAX_DIMENSION and re-encoded as PNG.
+ */
+const LOGO_MAX_DIMENSION = 240;
+const LOGO_MAX_SOURCE_BYTES = 5 * 1024 * 1024; // 5MB — generous ceiling before we even try to read the file
+
+function LogoUploadInput({ value, onChange }) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const handleFile = async (file) => {
+    setError("");
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setError("Please choose an image file (PNG, JPG, or SVG)."); return; }
+    if (file.size > LOGO_MAX_SOURCE_BYTES) { setError("That image is too large — please choose one under 5MB."); return; }
+
+    setBusy(true);
+    try {
+      if (file.type === "image/svg+xml") {
+        // SVGs are vector and already small — store as-is, no canvas resize needed.
+        const text = await file.text();
+        const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(text)))}`;
+        onChange(dataUrl);
+        return;
+      }
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Could not read that file."));
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => reject(new Error("Could not read that image."));
+          img.onload = () => {
+            const scale = Math.min(1, LOGO_MAX_DIMENSION / Math.max(img.width, img.height));
+            const w = Math.max(1, Math.round(img.width * scale));
+            const h = Math.max(1, Math.round(img.height * scale));
+            const canvas = document.createElement("canvas");
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL("image/png"));
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+      onChange(dataUrl);
+    } catch (e) {
+      setError(e.message || "Could not process that image. Please try a different file.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        onChange={(e) => handleFile(e.target.files?.[0])}
+        disabled={busy}
+      />
+      {busy && <p className="muted small">Processing image…</p>}
+      {error && <p className="muted small" style={{ color: "var(--red)" }}>⚠ {error}</p>}
+      {value && !busy && (
+        <div className="row-gap" style={{ marginTop: 8, alignItems: "center" }}>
+          <img src={value} alt="Logo preview" style={{ height: 40, maxWidth: 120, objectFit: "contain" }} />
+          <button type="button" className="link-btn danger" onClick={() => onChange("")}>Remove</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1951,18 +2106,24 @@ function CompanyEditModal({ company, onCancel, onSave }) {
         </label>
 
         <div className="two-col">
-          <Field label="Logo" hint={c.logoStyle !== "custom" ? "Locked to the original letterhead mark for this company." : "Colorable placeholder mark — swap in an uploaded logo later if you have one."}>
+          <Field label="Logo" hint={c.logoStyle !== "custom" && c.logoStyle !== "uploaded" ? "Locked to the original letterhead mark for this company." : c.logoStyle === "uploaded" ? "Your uploaded logo image." : "Colorable placeholder mark — swap in an uploaded logo below if you have one."}>
             <select value={c.logoStyle} onChange={(e) => p({ logoStyle: e.target.value })}>
               <option value="sagar">Sagar Roadways mark (red/grey)</option>
               <option value="ssk">S S K Roadlines mark (orange/grey)</option>
               <option value="custom">Custom colorable mark</option>
+              <option value="uploaded">Uploaded logo image</option>
             </select>
           </Field>
           {c.logoStyle === "custom" && (
             <Field label="Logo accent color"><input type="color" value={c.logoColor} onChange={(e) => p({ logoColor: e.target.value })} /></Field>
           )}
+          {c.logoStyle === "uploaded" && (
+            <Field label="Upload logo image" hint="PNG, JPG, or SVG. Resized automatically — keep it simple for best results on invoices.">
+              <LogoUploadInput value={c.logoUrl} onChange={(url) => p({ logoUrl: url })} />
+            </Field>
+          )}
         </div>
-        <div className="row-gap" style={{ marginBottom: 12 }}><Logo style={c.logoStyle} color={c.logoColor} size={40} /></div>
+        <div className="row-gap" style={{ marginBottom: 12 }}><Logo style={c.logoStyle} color={c.logoColor} url={c.logoUrl} size={40} /></div>
         <div className="row-gap end">
           <button className="ghost-btn" onClick={onCancel}>Cancel</button>
           <button className="primary-btn" onClick={() => onSave(c)} disabled={!c.name}>Save</button>
@@ -2132,7 +2293,7 @@ function PreviewModal({ invoice, company, onClose }) {
 
           <div className="inv-frame">
             <div className="inv-company-block">
-              <div className="inv-logo-float"><Logo style={company?.logoStyle} color={company?.logoColor} size={52} /></div>
+              <div className="inv-logo-float"><Logo style={company?.logoStyle} color={company?.logoColor} url={company?.logoUrl} size={52} /></div>
               <div className="inv-company-name">{company?.name}</div>
               <div className="inv-company-sub bold-inline">GSTIN {company?.gstin} &nbsp;&nbsp; PAN {company?.pan}</div>
               <div className="inv-company-sub">{company?.address}</div>
