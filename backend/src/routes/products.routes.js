@@ -70,13 +70,21 @@ async function loadOwnedProduct(req, res, next) {
 router.put("/:id", loadOwnedProduct, async (req, res, next) => {
   try {
     const body = productSchema.partial().parse(req.body);
+    // Same fix as customers.routes.js: previously ignored companyId
+    // entirely on update, so reassigning a product to a different company
+    // via the edit form silently did nothing.
+    if (body.companyId) {
+      const owns = await pool.query("SELECT id FROM companies WHERE id = $1 AND user_id = $2", [body.companyId, req.userId]);
+      if (!owns.rows.length) return res.status(404).json({ error: "Target company not found." });
+    }
     const { rows } = await pool.query(
       `UPDATE products SET
-         name = COALESCE($1, name), description = COALESCE($2, description),
-         hsn_sac = COALESCE($3, hsn_sac), unit = COALESCE($4, unit),
-         rate_paise = COALESCE($5, rate_paise), gst_rate = COALESCE($6, gst_rate)
-       WHERE id = $7 RETURNING *`,
-      [body.name, body.description, body.hsnSac, body.unit,
+         company_id = COALESCE($1, company_id),
+         name = COALESCE($2, name), description = COALESCE($3, description),
+         hsn_sac = COALESCE($4, hsn_sac), unit = COALESCE($5, unit),
+         rate_paise = COALESCE($6, rate_paise), gst_rate = COALESCE($7, gst_rate)
+       WHERE id = $8 RETURNING *`,
+      [body.companyId, body.name, body.description, body.hsnSac, body.unit,
        body.rate !== undefined && body.rate !== null ? toPaise(body.rate).toString() : null,
        body.gstRate, req.params.id]
     );

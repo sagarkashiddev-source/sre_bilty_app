@@ -654,7 +654,17 @@ export default function App() {
   };
   const persistCustomers = async (next) => {
     await diffAndSync(customers, next, {
-      create: async (c) => { const row = await api.Customers.create(customerToApi(c, c.companyId || companies[0]?.id)); Object.assign(c, { id: row.id }); },
+      // No longer falls back to companies[0]?.id when companyId is missing -
+      // that silent fallback is exactly what caused every customer added
+      // through the standalone Customers page to be filed under whichever
+      // company happened to be first in the list, regardless of intent.
+      // Every creation path now sets companyId explicitly; if one doesn't,
+      // fail loudly here rather than silently misfiling the customer again.
+      create: async (c) => {
+        if (!c.companyId) throw new Error("Please select a company for this customer before saving.");
+        const row = await api.Customers.create(customerToApi(c, c.companyId));
+        Object.assign(c, { id: row.id });
+      },
       update: async (c) => api.Customers.update(c.id, customerToApi(c, c.companyId)),
       remove: async (id) => api.Customers.remove(id),
     });
@@ -982,7 +992,7 @@ export default function App() {
         )}
 
         {view === "companies" && <CompanyManager companies={companies} invoices={invoices} onSave={persistCompanies} notify={notify} />}
-        {view === "customers" && <CustomerManager customers={customers} invoices={invoices} onSave={persistCustomers} notify={notify} />}
+        {view === "customers" && <CustomerManager customers={customers} companies={companies} invoices={invoices} onSave={persistCustomers} notify={notify} />}
         {view === "products" && <ProductManager products={products} companies={companies} onSave={persistProducts} notify={notify} />}
       </main>
 
@@ -2135,10 +2145,11 @@ function CompanyEditModal({ company, onCancel, onSave }) {
 
 /* ============================== Customer Manager ============================== */
 
-function emptyCustomer() { return { id: uid(), name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", state: "" }; }
+function emptyCustomer(companyId = "") { return { id: uid(), companyId, name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", state: "" }; }
 
-function CustomerManager({ customers, invoices, onSave, notify }) {
+function CustomerManager({ customers, companies, invoices, onSave, notify }) {
   const [editing, setEditing] = useState(null);
+  const companyById = (id) => companies.find((c) => c.id === id);
   const upsert = async (c) => {
     const exists = customers.some((x) => x.id === c.id);
     const next = exists ? customers.map((x) => (x.id === c.id ? c : x)) : [...customers, c];
@@ -2151,14 +2162,15 @@ function CustomerManager({ customers, invoices, onSave, notify }) {
 
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Customers</h1><p className="muted">Saved billing parties for faster invoicing.</p></div>
-        <button className="primary-btn" onClick={() => setEditing(emptyCustomer())}>+ Add customer</button>
+      <div className="page-head"><div><h1>Customers</h1><p className="muted">Saved billing parties for faster invoicing — each one belongs to a specific company.</p></div>
+        <button className="primary-btn" onClick={() => setEditing(emptyCustomer(companies[0]?.id))} disabled={!companies.length}>+ Add customer</button>
       </div>
       <div className="card-grid">
         {customers.length === 0 && <p className="muted">No saved customers yet — they'll also save automatically from the invoice form.</p>}
         {customers.map((c) => (
           <div className="card entity-card" key={c.id}>
             <div className="entity-title">{c.name}</div>
+            <div className="muted small">Billed by {companyById(c.companyId)?.name || "— no company set —"}</div>
             <div className="muted small">{c.gstin} {c.gstin && `· ${stateFromGSTIN(c.gstin)}`}</div>
             <p className="muted small">{c.billingAddress}</p>
             <div className="row-gap">
@@ -2168,18 +2180,24 @@ function CustomerManager({ customers, invoices, onSave, notify }) {
           </div>
         ))}
       </div>
-      {editing && <CustomerEditModal customer={editing} onCancel={() => setEditing(null)} onSave={upsert} />}
+      {editing && <CustomerEditModal customer={editing} companies={companies} onCancel={() => setEditing(null)} onSave={upsert} />}
     </div>
   );
 }
 
-function CustomerEditModal({ customer, onCancel, onSave }) {
+function CustomerEditModal({ customer, companies, onCancel, onSave }) {
   const [c, setC] = useState(customer);
   const p = (patch) => setC({ ...c, ...patch });
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{customer.name ? "Edit customer" : "New customer"}</h3>
+        <Field label="Company" hint="Which company bills this customer. Changing this moves them to a different company's customer list.">
+          <select value={c.companyId || ""} onChange={(e) => p({ companyId: e.target.value })}>
+            <option value="">— select a company —</option>
+            {companies.map((co) => <option key={co.id} value={co.id}>{co.name}</option>)}
+          </select>
+        </Field>
         <Field label="Name"><input value={c.name} onChange={(e) => p({ name: e.target.value })} /></Field>
         <div className="two-col">
           <Field label="Phone"><input value={c.phone} onChange={(e) => p({ phone: e.target.value })} /></Field>
@@ -2189,7 +2207,7 @@ function CustomerEditModal({ customer, onCancel, onSave }) {
         <Field label="Shipping address (optional)"><textarea rows={2} value={c.shippingAddress} onChange={(e) => p({ shippingAddress: e.target.value })} /></Field>
         <div className="row-gap end">
           <button className="ghost-btn" onClick={onCancel}>Cancel</button>
-          <button className="primary-btn" onClick={() => onSave(c)} disabled={!c.name}>Save</button>
+          <button className="primary-btn" onClick={() => onSave(c)} disabled={!c.name || !c.companyId}>Save</button>
         </div>
       </div>
     </div>
