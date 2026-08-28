@@ -76,14 +76,21 @@ async function loadOwnedCustomer(req, res, next) {
 router.put("/:id", loadOwnedCustomer, async (req, res, next) => {
   try {
     const body = customerSchema.partial().parse(req.body);
+    // If reassigning to a different company, that company must also belong
+    // to this user - loadOwnedCustomer only verified the CURRENT company.
+    if (body.companyId) {
+      const owns = await pool.query("SELECT id FROM companies WHERE id = $1 AND user_id = $2", [body.companyId, req.userId]);
+      if (!owns.rows.length) return res.status(404).json({ error: "Target company not found." });
+    }
     const { rows } = await pool.query(
       `UPDATE customers SET
-         name = COALESCE($1, name), gstin = COALESCE($2, gstin),
-         billing_address = COALESCE($3, billing_address), shipping_address = COALESCE($4, shipping_address),
-         phone = COALESCE($5, phone), email = COALESCE($6, email),
-         state = COALESCE($7, state), state_code = COALESCE($8, state_code)
-       WHERE id = $9 RETURNING *`,
-      [body.name, body.gstin, body.billingAddress, body.shippingAddress, body.phone, body.email,
+         company_id = COALESCE($1, company_id),
+         name = COALESCE($2, name), gstin = COALESCE($3, gstin),
+         billing_address = COALESCE($4, billing_address), shipping_address = COALESCE($5, shipping_address),
+         phone = COALESCE($6, phone), email = COALESCE($7, email),
+         state = COALESCE($8, state), state_code = COALESCE($9, state_code)
+       WHERE id = $10 RETURNING *`,
+      [body.companyId, body.name, body.gstin, body.billingAddress, body.shippingAddress, body.phone, body.email,
        body.state, body.stateCode, req.params.id]
     );
     res.json({ customer: toApi(rows[0]) });
