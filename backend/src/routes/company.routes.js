@@ -110,7 +110,7 @@ router.delete("/:id", async (req, res, next) => {
     const { rows: counts } = await pool.query(
       `SELECT
          (SELECT COUNT(*) FROM invoices WHERE company_id = $1) AS invoices,
-         (SELECT COUNT(*) FROM customers WHERE company_id = $1) AS customers,
+         (SELECT COUNT(*) FROM customer_companies WHERE company_id = $1) AS customers,
          (SELECT COUNT(*) FROM products WHERE company_id = $1) AS products`,
       [req.params.id]
     );
