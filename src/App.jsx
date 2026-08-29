@@ -357,14 +357,14 @@ function companyToApi(c) {
 
 function customerFromApi(row) {
   return {
-    id: row.id, companyId: row.companyId, name: row.name, phone: row.phone || "",
+    id: row.id, companyId: row.companyId, companyIds: row.companyIds || [row.companyId], name: row.name, phone: row.phone || "",
     gstin: row.gstin || "", billingAddress: row.billingAddress || "", shippingAddress: row.shippingAddress || "",
     state: row.state || stateFromGSTIN(row.gstin) || "", active: true,
   };
 }
-function customerToApi(c, companyId) {
+function customerToApi(c, companyId, companyIds) {
   return {
-    companyId, name: c.name, gstin: c.gstin || "", billingAddress: c.billingAddress || "",
+    companyId, companyIds: companyIds || c.companyIds || [companyId], name: c.name, gstin: c.gstin || "", billingAddress: c.billingAddress || "",
     shippingAddress: c.shippingAddress || "", phone: c.phone || "", state: c.state || stateFromGSTIN(c.gstin) || "",
   };
 }
@@ -661,11 +661,11 @@ export default function App() {
       // Every creation path now sets companyId explicitly; if one doesn't,
       // fail loudly here rather than silently misfiling the customer again.
       create: async (c) => {
-        if (!c.companyId) throw new Error("Please select a company for this customer before saving.");
-        const row = await api.Customers.create(customerToApi(c, c.companyId));
+        if (!c.companyId) throw new Error("Please select at least one company for this customer before saving.");
+        const row = await api.Customers.create(customerToApi(c, c.companyId, c.companyIds));
         Object.assign(c, { id: row.id });
       },
-      update: async (c) => api.Customers.update(c.id, customerToApi(c, c.companyId)),
+      update: async (c) => api.Customers.update(c.id, customerToApi(c, c.companyId, c.companyIds)),
       remove: async (id) => api.Customers.remove(id),
     });
     await loadEverything();
@@ -1173,7 +1173,7 @@ function Dashboard({ stats, companies, invoices, companyById, onNew, onOpenHisto
 function InvoiceForm({ draft, setDraft, companies, customers, products, persistCustomers, nextInvoiceNo, isDuplicateInvoiceNo, templates, persistTemplates, notify, online, onCancel, onSave, onPreview }) {
   const company = companies.find((c) => c.id === draft.companyId);
   const companyProducts = (products || []).filter((p) => p.companyId === draft.companyId);
-  const companyCustomers = (customers || []).filter((c) => c.companyId === draft.companyId);
+  const companyCustomers = (customers || []).filter((c) => (c.companyIds || [c.companyId]).includes(draft.companyId));
   const [saveAsCustomer, setSaveAsCustomer] = useState(false);
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
 
@@ -1248,15 +1248,25 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
 
   const persistCustomerAndTemplateIfNeeded = async () => {
     if (saveAsCustomer && draft.customerSnapshot.name) {
-      // Scoped to the currently selected company on both counts: the
-      // duplicate-GSTIN check only looks at THIS company's customers (a
-      // shared GSTIN across two different companies you bill for is a
-      // legitimate case, not a duplicate), and the new record is tagged
-      // with companyId explicitly - previously it inherited whichever
-      // company happened to be first in the list, silently filing new
-      // customers under the wrong company whenever you weren't on that one.
-      const exists = companyCustomers.find((c) => c.gstin && c.gstin === draft.customerSnapshot.gstin);
-      if (!exists) await persistCustomers([...customers, { id: uid(), companyId: draft.companyId, ...draft.customerSnapshot }]);
+      // A customer can legitimately be billed by more than one company (see
+      // companyCustomers/customer_companies). So the check here is in two
+      // parts: if this exact customer is already linked to the CURRENT
+      // company, there's nothing to do. If a customer with the same GSTIN
+      // exists under a DIFFERENT company, link this company to that same
+      // record instead of creating an unrelated duplicate - this is what
+      // makes "save this customer" work correctly for a shared client
+      // without making you re-enter their details a second time.
+      const gstin = draft.customerSnapshot.gstin;
+      const alreadyLinkedHere = companyCustomers.find((c) => c.gstin && c.gstin === gstin);
+      if (!alreadyLinkedHere) {
+        const existingElsewhere = gstin ? customers.find((c) => c.gstin && c.gstin === gstin) : null;
+        if (existingElsewhere) {
+          const nextCompanyIds = [...new Set([...(existingElsewhere.companyIds || [existingElsewhere.companyId]), draft.companyId])];
+          await persistCustomers(customers.map((c) => (c.id === existingElsewhere.id ? { ...c, companyIds: nextCompanyIds } : c)));
+        } else {
+          await persistCustomers([...customers, { id: uid(), companyId: draft.companyId, companyIds: [draft.companyId], ...draft.customerSnapshot }]);
+        }
+      }
     }
     if (saveAsTemplate) {
       await persistTemplates([...templates, {
@@ -2145,7 +2155,7 @@ function CompanyEditModal({ company, onCancel, onSave }) {
 
 /* ============================== Customer Manager ============================== */
 
-function emptyCustomer(companyId = "") { return { id: uid(), companyId, name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", state: "" }; }
+function emptyCustomer(companyId = "") { return { id: uid(), companyId, companyIds: companyId ? [companyId] : [], name: "", phone: "", gstin: "", billingAddress: "", shippingAddress: "", state: "" }; }
 
 function CustomerManager({ customers, companies, invoices, onSave, notify }) {
   const [editing, setEditing] = useState(null);
@@ -2162,7 +2172,7 @@ function CustomerManager({ customers, companies, invoices, onSave, notify }) {
 
   return (
     <div className="page">
-      <div className="page-head"><div><h1>Customers</h1><p className="muted">Saved billing parties for faster invoicing — each one belongs to a specific company.</p></div>
+      <div className="page-head"><div><h1>Customers</h1><p className="muted">Saved billing parties for faster invoicing — a customer can be linked to more than one company.</p></div>
         <button className="primary-btn" onClick={() => setEditing(emptyCustomer(companies[0]?.id))} disabled={!companies.length}>+ Add customer</button>
       </div>
       <div className="card-grid">
@@ -2170,7 +2180,7 @@ function CustomerManager({ customers, companies, invoices, onSave, notify }) {
         {customers.map((c) => (
           <div className="card entity-card" key={c.id}>
             <div className="entity-title">{c.name}</div>
-            <div className="muted small">Billed by {companyById(c.companyId)?.name || "— no company set —"}</div>
+            <div className="muted small">Billed by {(c.companyIds || [c.companyId]).map((id) => companyById(id)?.name).filter(Boolean).join(", ") || "— no company set —"}</div>
             <div className="muted small">{c.gstin} {c.gstin && `· ${stateFromGSTIN(c.gstin)}`}</div>
             <p className="muted small">{c.billingAddress}</p>
             <div className="row-gap">
@@ -2186,17 +2196,29 @@ function CustomerManager({ customers, companies, invoices, onSave, notify }) {
 }
 
 function CustomerEditModal({ customer, companies, onCancel, onSave }) {
-  const [c, setC] = useState(customer);
+  const [c, setC] = useState({ ...customer, companyIds: customer.companyIds || (customer.companyId ? [customer.companyId] : []) });
   const p = (patch) => setC({ ...c, ...patch });
+  const toggleCompany = (id) => {
+    const set = new Set(c.companyIds);
+    if (set.has(id)) set.delete(id); else set.add(id);
+    const companyIds = [...set];
+    // companyId (primary) stays valid even as the checked set changes - falls
+    // back to the first remaining company if the current primary got unchecked.
+    p({ companyIds, companyId: companyIds.includes(c.companyId) ? c.companyId : companyIds[0] || "" });
+  };
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{customer.name ? "Edit customer" : "New customer"}</h3>
-        <Field label="Company" hint="Which company bills this customer. Changing this moves them to a different company's customer list.">
-          <select value={c.companyId || ""} onChange={(e) => p({ companyId: e.target.value })}>
-            <option value="">— select a company —</option>
-            {companies.map((co) => <option key={co.id} value={co.id}>{co.name}</option>)}
-          </select>
+        <Field label="Companies" hint="Check every company that bills this customer. A shared client (e.g. billed by two of your companies) only needs one record — check both here instead of creating a second customer.">
+          <div className="checkbox-list">
+            {companies.map((co) => (
+              <label key={co.id} className="checkbox-row">
+                <input type="checkbox" checked={c.companyIds.includes(co.id)} onChange={() => toggleCompany(co.id)} />
+                {co.name}
+              </label>
+            ))}
+          </div>
         </Field>
         <Field label="Name"><input value={c.name} onChange={(e) => p({ name: e.target.value })} /></Field>
         <div className="two-col">
@@ -2207,7 +2229,7 @@ function CustomerEditModal({ customer, companies, onCancel, onSave }) {
         <Field label="Shipping address (optional)"><textarea rows={2} value={c.shippingAddress} onChange={(e) => p({ shippingAddress: e.target.value })} /></Field>
         <div className="row-gap end">
           <button className="ghost-btn" onClick={onCancel}>Cancel</button>
-          <button className="primary-btn" onClick={() => onSave(c)} disabled={!c.name || !c.companyId}>Save</button>
+          <button className="primary-btn" onClick={() => onSave(c)} disabled={!c.name || c.companyIds.length === 0}>Save</button>
         </div>
       </div>
     </div>
@@ -2536,6 +2558,8 @@ input, select, textarea{font-family:inherit; font-size:13.5px; padding:8px 10px;
 input:focus, select:focus, textarea:focus{outline:2px solid var(--gold); outline-offset:1px; border-color:var(--gold);}
 .checkbox-row{display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:10px;}
 .checkbox-row input{width:auto;}
+.checkbox-list{max-height:160px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:10px 12px;}
+.checkbox-list .checkbox-row{margin-bottom:6px;}
 
 .items-table input, .items-table select, .items-table textarea{padding:6px 8px; font-size:13px;}
 .items-table td{vertical-align:top;}

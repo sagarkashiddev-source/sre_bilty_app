@@ -94,7 +94,15 @@ async function getCompanyAndCustomer(client, companyId, customerId) {
   const company = companyRes.rows[0];
   let customer = null;
   if (customerId) {
-    const custRes = await client.query("SELECT * FROM customers WHERE id = $1 AND company_id = $2", [customerId, companyId]);
+    // A customer can be linked to more than one company (customer_companies),
+    // so membership - not customers.company_id directly - is what determines
+    // whether this company is allowed to bill them.
+    const custRes = await client.query(
+      `SELECT c.* FROM customers c
+       JOIN customer_companies cc ON cc.customer_id = c.id
+       WHERE c.id = $1 AND cc.company_id = $2`,
+      [customerId, companyId]
+    );
     customer = custRes.rows[0] || null;
   }
   return { company, customer };
