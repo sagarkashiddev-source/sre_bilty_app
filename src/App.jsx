@@ -589,7 +589,16 @@ export default function App() {
         return { customers: cu, products: pr, invoices: inv, templates: tpl, payments: pay, creditNotes: cred, debitNotes: deb };
       }));
 
-      setCustomers(perCompany.flatMap((p) => p.customers).map(customerFromApi));
+      // Customers can now be linked to more than one company (see
+      // customer_companies), so the per-company fetch above returns the SAME
+      // shared customer once for every company it's linked to. Flattening
+      // without deduping - which was fine when a customer belonged to
+      // exactly one company - now produces a visibly duplicated card for
+      // every company a shared customer is linked to. Dedupe by id, keeping
+      // one copy (its content is identical regardless of which company's
+      // fetch returned it).
+      const dedupeById = (rows) => [...new Map(rows.map((r) => [r.id, r])).values()];
+      setCustomers(dedupeById(perCompany.flatMap((p) => p.customers)).map(customerFromApi));
       setProducts(perCompany.flatMap((p) => p.products).map(productFromApi));
       setInvoices(perCompany.flatMap((p) => p.invoices).map(invoiceFromApi));
       setTemplates(perCompany.flatMap((p) => p.templates));
@@ -1248,21 +1257,31 @@ function InvoiceForm({ draft, setDraft, companies, customers, products, persistC
 
   const persistCustomerAndTemplateIfNeeded = async () => {
     if (saveAsCustomer && draft.customerSnapshot.name) {
-      // A customer can legitimately be billed by more than one company (see
-      // companyCustomers/customer_companies). So the check here is in two
-      // parts: if this exact customer is already linked to the CURRENT
-      // company, there's nothing to do. If a customer with the same GSTIN
-      // exists under a DIFFERENT company, link this company to that same
-      // record instead of creating an unrelated duplicate - this is what
-      // makes "save this customer" work correctly for a shared client
-      // without making you re-enter their details a second time.
+      // Three ways an existing customer can already cover this save, checked
+      // in order of reliability:
+      // 1. This exact saved customer (picked from the dropdown) is already
+      //    linked to the current company - nothing to do.
+      // 2. A customer with the same GSTIN exists (possibly under a
+      //    different company) - link this company to it instead of
+      //    creating an unrelated duplicate.
+      // 3. No GSTIN was entered at all (common for unregistered/individual
+      //    customers) - GSTIN can't identify them, so fall back to a
+      //    case-insensitive name match. Without this, every single save
+      //    with "save this customer" checked created a fresh duplicate for
+      //    any customer without a GSTIN, since GSTIN-only matching never
+      //    found anything to compare against.
       const gstin = draft.customerSnapshot.gstin;
-      const alreadyLinkedHere = companyCustomers.find((c) => c.gstin && c.gstin === gstin);
+      const name = (draft.customerSnapshot.name || "").trim().toLowerCase();
+      const alreadyLinkedHere = draft.customerId && companyCustomers.some((c) => c.id === draft.customerId);
       if (!alreadyLinkedHere) {
-        const existingElsewhere = gstin ? customers.find((c) => c.gstin && c.gstin === gstin) : null;
+        const existingElsewhere = gstin
+          ? customers.find((c) => c.gstin && c.gstin === gstin)
+          : customers.find((c) => !c.gstin && (c.name || "").trim().toLowerCase() === name);
         if (existingElsewhere) {
           const nextCompanyIds = [...new Set([...(existingElsewhere.companyIds || [existingElsewhere.companyId]), draft.companyId])];
-          await persistCustomers(customers.map((c) => (c.id === existingElsewhere.id ? { ...c, companyIds: nextCompanyIds } : c)));
+          if (!nextCompanyIds.every((id) => (existingElsewhere.companyIds || [existingElsewhere.companyId]).includes(id))) {
+            await persistCustomers(customers.map((c) => (c.id === existingElsewhere.id ? { ...c, companyIds: nextCompanyIds } : c)));
+          }
         } else {
           await persistCustomers([...customers, { id: uid(), companyId: draft.companyId, companyIds: [draft.companyId], ...draft.customerSnapshot }]);
         }
